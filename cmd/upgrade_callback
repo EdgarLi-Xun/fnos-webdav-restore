@@ -1,0 +1,6 @@
+#!/bin/bash
+set -e
+if [ ! -f "$TRIM_PKGETC/config.env" ]; then
+  "$(dirname "$0")/write_config"
+fi
+exit 0

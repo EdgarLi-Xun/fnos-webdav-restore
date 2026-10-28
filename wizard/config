@@ -1,0 +1,29 @@
+[
+  {
+    "stepTitle": "WebDAV 核对",
+    "items": [
+      {
+        "type": "tips",
+        "helpText": "修改后下次点击桌面图标即生效。密码只保存在本应用配置目录，不会写入开源仓库。"
+      },
+      {
+        "type": "text",
+        "field": "wizard_dav_user",
+        "label": "WebDAV 用户名",
+        "initValue": ""
+      },
+      {
+        "type": "password",
+        "field": "wizard_dav_password",
+        "label": "WebDAV 密码",
+        "initValue": ""
+      },
+      {
+        "type": "text",
+        "field": "wizard_need_shares",
+        "label": "需要核对的盘名（逗号分隔，可留空）",
+        "initValue": ""
+      }
+    ]
+  }
+]

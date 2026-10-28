@@ -1,0 +1,14 @@
+{
+    ".url": {
+        "webdavfix.Application": {
+            "title": "恢复 WebDAV",
+            "desc": "一键恢复因存储卷误卸载而丢失的 WebDAV 共享",
+            "icon": "images/icon-{0}.png",
+            "type": "url",
+            "protocol": "http",
+            "port": "7598",
+            "url": "/",
+            "allUsers": true
+        }
+    }
+}

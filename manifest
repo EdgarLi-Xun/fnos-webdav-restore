@@ -1,0 +1,16 @@
+appname                    = webdavfix
+version                    = 1.0.0
+display_name               = 恢复 WebDAV
+desc                       = 一键恢复飞牛 fnOS 因存储卷误卸载而丢失的 WebDAV 共享。点击桌面图标即可重启共享服务并核对盘符。
+platform                   = all
+source                     = thirdparty
+maintainer                 = EdgarLi
+distributor                = EdgarLi
+os_min_version             = 1.2.0
+desktop_uidir              = ui
+desktop_applaunchname      = webdavfix.Application
+service_port               = 7598
+ctl_stop                   = true
+checkport                  = true
+disable_authorization_path = true
+changelog                  = 首次发布：桌面一键恢复 WebDAV 共享。

@@ -1,0 +1,24 @@
+#!/bin/bash
+set -e
+mkdir -p "$TRIM_PKGETC"
+python3 - "$TRIM_PKGETC/config.env" <<'PY'
+import os
+import sys
+
+path = sys.argv[1]
+
+
+def value(key, default=""):
+    return os.environ.get(key, default).replace("\r", "").replace("\n", "")
+
+port = value("wizard_port") or "7598"
+lines = [
+    "WEBDAVFIX_PORT=%s" % port,
+    "WEBDAVFIX_DAV_USER=%s" % value("wizard_dav_user"),
+    "WEBDAVFIX_DAV_PASSWORD=%s" % value("wizard_dav_password"),
+    "WEBDAVFIX_NEED_SHARES=%s" % value("wizard_need_shares"),
+]
+with open(path, "w", encoding="utf-8") as handle:
+    handle.write("\n".join(lines) + "\n")
+os.chmod(path, 0o600)
+PY

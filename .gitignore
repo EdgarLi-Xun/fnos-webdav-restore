@@ -1,0 +1,8 @@
+*.fpk
+app.tgz
+manifest.checksum
+__pycache__/
+*.pyc
+.DS_Store
+install.env
+*.log
