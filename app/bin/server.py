@@ -5,15 +5,18 @@ import html
 import json
 import os
 import re
+import socket
+import socketserver
 import subprocess
 import threading
 import time
 import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler, HTTPServer, ThreadingHTTPServer
 
 DEFAULT_PORT = 7598
+DEFAULT_PREFIX = "/app/webdavfix"
 SHARE_ROOT = "/share/home"
 VOL_RE = re.compile(r"^/vol\d+/")
 ACTION_LOCK = threading.Lock()
@@ -84,6 +87,25 @@ def save_store(cfg, store):
         handle.write("\n")
     os.chmod(tmp, 0o600)
     os.replace(tmp, path)
+
+
+def gateway_prefix():
+    prefix = (os.environ.get("WEBDAVFIX_PREFIX") or DEFAULT_PREFIX).strip() or DEFAULT_PREFIX
+    if not prefix.startswith("/"):
+        prefix = "/" + prefix
+    return prefix.rstrip("/")
+
+
+def route_path(raw):
+    path = urllib.parse.urlsplit(raw).path or "/"
+    prefix = gateway_prefix()
+    if path == prefix or path.startswith(prefix + "/"):
+        path = path[len(prefix):] or "/"
+    if not path.startswith("/"):
+        path = "/" + path
+    if path != "/" and path.endswith("/"):
+        path = path.rstrip("/")
+    return path
 
 
 def row_key(uid, parts):
@@ -450,35 +472,64 @@ def snapshot(cfg):
     return store, build_rows(store, scan_live())
 
 
+def short_where(target):
+    parts = [part for part in (target or "").split("/") if part]
+    if parts and parts[0].startswith("vol"):
+        return parts[0]
+    return ""
+
+
+def face(status, served_text):
+    if status == "在线" and served_text == "已挂出":
+        return "已挂出", "ok"
+    if status == "在线" and served_text == "未挂出":
+        return "未挂出", "warn"
+    if status == "在线":
+        return "在线", "ok"
+    if status.startswith("已排除"):
+        return "已排除", "off"
+    if status == "缺失":
+        return "缺失", "warn"
+    return status, "bad"
+
+
 def page(rows, message="", error="", confirm_rows=None, served=None):
     if error:
-        banner, color, bg = html.escape(error), "#b42318", "#fef3f2"
+        banner_html = '<div class="banner bad">%s</div>' % html.escape(error)
     elif message:
-        banner, color, bg = html.escape(message), "#067647", "#ecfdf3"
+        banner_html = '<div class="banner ok">%s</div>' % html.escape(message)
     else:
-        banner, color, bg = "勾选映射后再操作。打开本页不会重启服务。", "#175cd3", "#eff8ff"
+        banner_html = ""
 
     body_rows = []
+    seen_uid = None
+    chosen = {item["token"] for item in confirm_rows} if confirm_rows else set()
     for row in rows:
+        if row["uid"] != seen_uid:
+            seen_uid = row["uid"]
+            body_rows.append('<div class="group">用户 %s</div>' % html.escape(row["uid"]))
         served_text = "未核对"
         if served is not None:
             names = {display_name(row["parts"]), row["parts"][-1]}
             served_text = "已挂出" if names & set(served) else "未挂出"
+        label, kind = face(row["status"], served_text)
+        where = short_where(row["target"])
         body_rows.append(
-            "<tr><td><input type=\"checkbox\" name=\"sel\" value=\"%s\"%s></td>"
-            "<td>%s</td><td>%s</td><td>%s</td><td>%s</td><td>%s</td></tr>"
+            '<label class="item"><input type="checkbox" name="sel" value="%s"%s>'
+            '<span class="main"><span class="name">%s</span><span class="meta" title="%s">%s</span></span>'
+            '<span class="state %s">%s</span></label>'
             % (
                 html.escape(row["token"], quote=True),
-                " checked" if confirm_rows and row["token"] in {item["token"] for item in confirm_rows} else "",
-                html.escape(row["uid"]),
+                " checked" if row["token"] in chosen else "",
                 html.escape(display_name(row["parts"])),
-                html.escape(row["target"] or "—"),
-                html.escape(row["status"]),
-                html.escape(served_text),
+                html.escape(row["target"] or "—", quote=True),
+                html.escape(where or "路径未知"),
+                kind,
+                html.escape(label),
             )
         )
     if not body_rows:
-        body_rows.append("<tr><td colspan=\"6\">没有读到 WebDAV 映射。</td></tr>")
+        body_rows.append('<div class="empty">没有读到 WebDAV 映射。</div>')
 
     confirm = ""
     if confirm_rows:
@@ -488,11 +539,11 @@ def page(rows, message="", error="", confirm_rows=None, served=None):
             for row in confirm_rows
         )
         confirm = (
-            "<form method=\"post\" action=\"/\">"
-            "<p>确认卸载这些映射：%s。只删除软链，不删除文件。</p>"
-            "%s<input type=\"hidden\" name=\"confirm\" value=\"1\">"
-            "<button type=\"submit\" name=\"action\" value=\"uninstall\">确认卸载</button>"
-            "</form>" % (labels, hidden)
+            "<div class=\"confirm\"><p>确认卸载这些映射：%s。只删除软链，不删除文件。</p>"
+            "<form method=\"post\" action=\"%s\">%s"
+            "<input type=\"hidden\" name=\"confirm\" value=\"1\">"
+            "<button class=\"danger\" type=\"submit\" name=\"action\" value=\"uninstall\">确认卸载</button>"
+            "</form></div>" % (labels, html.escape(gateway_prefix() + "/", quote=True), hidden)
         )
 
     table = "".join(body_rows)
@@ -503,40 +554,70 @@ def page(rows, message="", error="", confirm_rows=None, served=None):
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>恢复 WebDAV</title>
 <style>
-body{font-family:"Segoe UI","Microsoft YaHei",sans-serif;background:#f4f6f8;margin:0;color:#1f2a37}
-main{max-width:980px;margin:32px auto;background:#fff;border-radius:16px;padding:28px 32px;box-shadow:0 8px 24px rgb(15 23 42 / 8%%)}
-h1{margin:0 0 12px;font-size:24px}
-.banner{background:%s;color:%s;border-radius:12px;padding:12px 16px;margin:16px 0;font-weight:600}
-table{width:100%%;border-collapse:collapse}
-th,td{text-align:left;padding:8px 10px;border-bottom:1px solid #eaecf0;font-size:14px;vertical-align:top}
-button{appearance:none;border:0;background:#087f8c;color:#fff;font-size:14px;padding:10px 14px;border-radius:10px;cursor:pointer;margin:12px 8px 0 0}
-button.danger{background:#b42318}
-button.plain{background:#344054}
-button:hover{filter:brightness(0.95)}
-.muted{color:#667085;font-size:13px}
+:root{color-scheme:light;--ink:#1c2430;--muted:#98a2b3;--line:#eef0f3;--teal:#0f766e;--teal-d:#115e59}
+*{box-sizing:border-box}
+html,body{height:100%%;margin:0;background:#fff;color:var(--ink);font-family:"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif}
+body{display:flex;flex-direction:column}
+.shell{flex:1;min-height:0;display:flex;flex-direction:column}
+.top{flex:none;padding:14px 18px 12px;border-bottom:1px solid var(--line)}
+.actions{display:flex;flex-wrap:wrap;align-items:center;gap:8px}
+.all{display:inline-flex;align-items:center;gap:6px;margin-right:4px;color:#475467;font-size:13px}
+.hint{margin:8px 0 0;color:var(--muted);font-size:12px}
+.banner{margin:10px 18px 0;border-radius:8px;padding:8px 10px;font-size:13px;line-height:1.5}
+.banner.ok{background:#ecfdf3;color:#067647}
+.banner.bad{background:#fef3f2;color:#b42318}
+.list{flex:1;overflow:auto;padding-bottom:12px}
+.group{padding:14px 18px 4px;color:var(--muted);font-size:12px}
+.item{display:flex;align-items:center;gap:12px;padding:9px 18px;cursor:pointer}
+.item:hover{background:#f7faf9}
+.main{min-width:0;display:flex;flex-direction:column;gap:2px}
+.name{font-size:14px;font-weight:600}
+.meta{color:var(--muted);font-size:12px}
+.state{margin-left:auto;flex:none;font-size:12px}
+.state::before{content:"";display:inline-block;width:6px;height:6px;border-radius:50%%;margin-right:6px;background:currentColor;vertical-align:1px}
+.state.ok{color:#067647}
+.state.warn{color:#b54708}
+.state.bad{color:#b42318}
+.state.off{color:#98a2b3}
+.empty{padding:28px 18px;color:var(--muted);font-size:13px}
+button{appearance:none;border:1px solid transparent;background:var(--teal);color:#fff;font-size:13px;line-height:1;padding:7px 12px;border-radius:8px;cursor:pointer}
+button:hover{background:var(--teal-d)}
+button.ghost{background:#fff;color:#344054;border-color:#d0d5dd}
+button.ghost:hover{background:#f9fafb}
+button.danger{background:#fff;color:#b42318;border-color:#fecdca}
+button.danger:hover{background:#fef3f2}
+.confirm{margin:10px 18px 0;padding:10px 12px;border-radius:8px;background:#fffaeb;color:#7a2e0e}
+.confirm p{margin:0 0 8px;font-size:13px}
+.confirm form{margin:0}
+input[type=checkbox]{width:15px;height:15px;accent-color:var(--teal)}
 </style>
 </head>
 <body>
-<main>
-<h1>恢复 WebDAV</h1>
-<div class="banner">%s</div>
-<form method="post" action="/">
-<table>
-<thead><tr><th></th><th>用户</th><th>映射</th><th>目标路径</th><th>状态</th><th>服务</th></tr></thead>
-<tbody>%s</tbody>
-</table>
-<button type="submit" name="action" value="refresh" class="plain">刷新</button>
-<button type="submit" name="action" value="reload">重新加载选中</button>
-<button type="submit" name="action" value="uninstall" class="danger">卸载选中</button>
-<button type="submit" name="action" value="unexclude" class="plain">取消排除</button>
-<button type="submit" name="action" value="reload_all">全部重新加载</button>
-</form>
 %s
-<p class="muted">卸载只去掉映射软链，磁盘上的文件还在。重新加载、卸载和全部重新加载都会重启 webdav，客户端会短暂断开。已排除的映射不会被全部重新加载加回来。</p>
-</main>
+<form class="shell" method="post" action="%s">
+<div class="top">
+<div class="actions">
+<label class="all"><input id="pick-all" type="checkbox">全选</label>
+<button class="ghost" type="submit" name="action" value="refresh">刷新</button>
+<button type="submit" name="action" value="reload">重新加载</button>
+<button class="ghost" type="submit" name="action" value="reload_all">全部重新加载</button>
+<button class="ghost" type="submit" name="action" value="unexclude">取消排除</button>
+<button class="danger" type="submit" name="action" value="uninstall">卸载</button>
+</div>
+<p class="hint">卸载只去掉映射，不删除文件。重新加载会让客户端短暂断开。</p>
+</div>
+%s
+<div class="list">%s</div>
+</form>
+<script>
+document.getElementById("pick-all").addEventListener("change", function () {
+  var on = this.checked;
+  document.querySelectorAll("input[name=sel]").forEach(function (el) { el.checked = on; });
+});
+</script>
 </body>
 </html>
-""" % (bg, color, banner, table, confirm)
+""" % (confirm, html.escape(gateway_prefix() + "/", quote=True), banner_html, table)
 
 
 def read_form(handler):
@@ -580,7 +661,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_html(page(rows, message=message, error=error, confirm_rows=confirm_rows, served=served), code=code)
 
     def do_GET(self):
-        path = urllib.parse.urlsplit(self.path).path
+        path = route_path(self.path)
         if path.startswith("/favicon"):
             self.send_response(204)
             self.end_headers()
@@ -594,7 +675,7 @@ class Handler(BaseHTTPRequestHandler):
             self.send_html(page([], error=str(exc)), code=500)
 
     def do_POST(self):
-        path = urllib.parse.urlsplit(self.path).path
+        path = route_path(self.path)
         if path != "/":
             self.send_html(page([], error="页面不存在"), code=404)
             return
@@ -633,8 +714,33 @@ class Handler(BaseHTTPRequestHandler):
             self.send_html(page([], error=str(exc)), code=500)
 
 
+class UnixHTTPServer(socketserver.ThreadingMixIn, HTTPServer):
+    daemon_threads = True
+    allow_reuse_address = True
+
+    def __init__(self, server_address, request_handler):
+        self.address_family = socket.AF_UNIX
+        HTTPServer.__init__(self, server_address, request_handler)
+
+    def server_bind(self):
+        if os.path.exists(self.server_address):
+            os.remove(self.server_address)
+        self.socket.bind(self.server_address)
+        os.chmod(self.server_address, 0o666)
+        self.server_name = "unix"
+        self.server_port = 0
+
+
 if __name__ == "__main__":
-    port = load_config()["port"]
-    httpd = ThreadingHTTPServer(("0.0.0.0", port), Handler)
-    print("webdavfix listening", port, flush=True)
+    sock_path = os.environ.get("WEBDAVFIX_SOCKET", "")
+    if sock_path:
+        directory = os.path.dirname(sock_path)
+        if directory:
+            os.makedirs(directory, exist_ok=True)
+        httpd = UnixHTTPServer(sock_path, Handler)
+        print("webdavfix listening", sock_path, flush=True)
+    else:
+        port = load_config()["port"]
+        httpd = ThreadingHTTPServer(("127.0.0.1", port), Handler)
+        print("webdavfix listening", port, flush=True)
     httpd.serve_forever()

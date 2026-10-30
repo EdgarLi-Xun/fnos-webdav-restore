@@ -1,5 +1,5 @@
 appname                    = webdavfix
-version                    = 1.1.0
+version                    = 1.2.0
 display_name               = 恢复 WebDAV
 desc                       = 在飞牛桌面窗口中查看 WebDAV 映射，按勾选重新加载或卸载。卸载只去掉映射，不删除文件。
 platform                   = all
@@ -9,8 +9,7 @@ distributor                = EdgarLi
 os_min_version             = 1.2.0
 desktop_uidir              = ui
 desktop_applaunchname      = webdavfix.Application
-service_port               = 7598
 ctl_stop                   = true
-checkport                  = true
+checkport                  = false
 disable_authorization_path = true
-changelog                  = 桌面窗口内列出映射，支持勾选后重新加载或卸载。卸载只删除软链。
+changelog                  = 桌面窗口改走系统网关，不再单独监听端口。

@@ -4,14 +4,14 @@ set -e
 PIDFILE="${TRIM_PKGVAR}/webdavfix.pid"
 LOGFILE="${TRIM_PKGVAR}/webdavfix.log"
 CONF="${TRIM_PKGETC}/config.env"
-PORT=7598
+SOCKET="${TRIM_APPDEST}/app.sock"
+PREFIX="/app/webdavfix"
 
 load_conf() {
   if [ -f "$CONF" ]; then
     # shellcheck disable=SC1090
     . "$CONF"
   fi
-  [ -n "$WEBDAVFIX_PORT" ] && PORT="$WEBDAVFIX_PORT"
 }
 
 is_running() {
@@ -22,29 +22,34 @@ is_running() {
 start_app() {
   mkdir -p "$TRIM_PKGVAR" "$TRIM_PKGETC"
   if [ ! -f "$CONF" ]; then
-    printf 'WEBDAVFIX_PORT=7598\nWEBDAVFIX_DAV_USER=\nWEBDAVFIX_DAV_PASSWORD=\nWEBDAVFIX_NEED_SHARES=\n' > "$CONF"
+    printf 'WEBDAVFIX_DAV_USER=\nWEBDAVFIX_DAV_PASSWORD=\nWEBDAVFIX_NEED_SHARES=\n' > "$CONF"
     chmod 600 "$CONF"
   fi
   load_conf
   export WEBDAVFIX_ETC="$TRIM_PKGETC"
-  export WEBDAVFIX_PORT="$PORT"
+  export WEBDAVFIX_PREFIX="$PREFIX"
+  export WEBDAVFIX_SOCKET="$SOCKET"
+  rm -f "$SOCKET"
   nohup python3 "$TRIM_APPDEST/bin/server.py" >> "$LOGFILE" 2>&1 &
   echo $! > "$PIDFILE"
-  if python3 - "$PORT" <<'PY'
+  if python3 - "$SOCKET" <<'PY'
+import os
 import socket
 import sys
 import time
 
-port = int(sys.argv[1])
+path = sys.argv[1]
 for _ in range(30):
-    sock = socket.socket()
-    sock.settimeout(1)
-    try:
-        sock.connect(("127.0.0.1", port))
-        sock.close()
-        sys.exit(0)
-    except Exception:
-        time.sleep(0.3)
+    if os.path.exists(path):
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        sock.settimeout(1)
+        try:
+            sock.connect(path)
+            sock.close()
+            sys.exit(0)
+        except Exception:
+            pass
+    time.sleep(0.3)
 sys.exit(1)
 PY
   then
@@ -52,7 +57,7 @@ PY
       return 0
     fi
   fi
-  echo "webdavfix failed to listen on port ${PORT}" > "$TRIM_TEMP_LOGFILE"
+  echo "webdavfix failed to listen on ${SOCKET}" > "$TRIM_TEMP_LOGFILE"
   return 1
 }
 
@@ -64,7 +69,7 @@ stop_app() {
       kill -9 "$(cat "$PIDFILE")" 2>/dev/null || true
     fi
   fi
-  rm -f "$PIDFILE"
+  rm -f "$PIDFILE" "$SOCKET"
   return 0
 }
 

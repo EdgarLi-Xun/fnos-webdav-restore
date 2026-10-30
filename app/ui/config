@@ -5,9 +5,10 @@
             "desc": "一键恢复因存储卷误卸载而丢失的 WebDAV 共享",
             "icon": "images/icon-{0}.png",
             "type": "iframe",
-            "protocol": "http",
-            "port": "7598",
-            "url": "/",
+            "protocol": "",
+            "gatewayPrefix": "/app/webdavfix",
+            "gatewaySocket": "app.sock",
+            "url": "/app/webdavfix/",
             "allUsers": true
         }
     }
